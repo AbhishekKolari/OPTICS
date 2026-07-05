@@ -8,3 +8,22 @@
 
 # # .env.development.local
 # .env.development.local
+
+# local repo files
+download_models.py
+visualise_attention_maps.py
+viz_attention_maps.py
+__pycache__/*.pyc
+attention_maps_and_overlays/*
+benchmark_composition.png
+qwen2.5vl-32b.csv
+qwen2.5vl-32b.json
+plot.py
+run_merged_benchmark.sh
+run_qwen_viz.sh
+analyze_accuracy_by_diff.py
+analyze_classification_metrics.py
+run_merged_benchmark_gemma3.py
+run_merged_benchmark_internvl3.py
+run_merged_benchmark_qwen2.5vl.py
+logs/*

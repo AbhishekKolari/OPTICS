@@ -17,7 +17,7 @@ umap==0.1.1
 openai~=0.28.0
 seaborn~=0.13.2
 replicate~=0.31.0
-accelerate==0.33.0
+accelerate>=1.1.0
 google-generativeai==0.7.2
 anthropic==0.63.0
 ipykernel==6.29.5

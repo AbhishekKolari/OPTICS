@@ -1,0 +1,86 @@
+\begin{tikzpicture}
+\begin{axis}[
+    width=4.5in,
+    height=3.0in,
+    xlabel={Ground Truth Count Difference},
+    ylabel={Accuracy (\%)},
+    xmin=-0.5, xmax=5.5,
+    ymin=0, ymax=100,
+    xtick={0,1,2,3,4,5},
+    xticklabels={1,2,3,4,5,6-9},
+    ytick={0,20,40,60,80,100},
+    grid=major,
+    grid style={gray!20, line width=0.5pt},
+    legend pos=north east,
+    legend style={font=\small, legend cell align=left, fill opacity=.7},
+    legend columns=2,
+    every axis plot/.append style={line width=1pt, mark size=2.5pt},
+    tick label style={font=\footnotesize},
+    label style={font=\small},
+    tick style={line width=0.6pt},
+]
+\addplot[color=red!80!black, mark=o, mark options={fill=red!80!black}] coordinates {
+    (0, 53.2)
+    (1, 59.9)
+    (2, 60.2)
+    (3, 58.6)
+    (4, 54.9)
+    (5, 70.0)
+};
+\addlegendentry{gemma-3-27b-it};
+\addplot[color=blue!80!black, mark=square, mark options={fill=blue!80!black}] coordinates {
+    (0, 53.6)
+    (1, 59.6)
+    (2, 60.3)
+    (3, 62.3)
+    (4, 69.2)
+    (5, 70.6)
+};
+\addlegendentry{gpt-4o-mini};
+\addplot[color=green!70!black, mark=triangle, mark options={fill=green!70!black}] coordinates {
+    (0, 58.6)
+    (1, 63.1)
+    (2, 60.0)
+    (3, 67.0)
+    (4, 53.0)
+    (5, 67.9)
+};
+\addlegendentry{internvl3-14b};
+\addplot[color=orange!80!black, mark=diamond, mark options={fill=orange!80!black}] coordinates {
+    (0, 56.6)
+    (1, 60.7)
+    (2, 64.4)
+    (3, 65.7)
+    (4, 64.9)
+    (5, 68.9)
+};
+\addlegendentry{internvl3-8b};
+\addplot[color=purple!80!black, mark=*, mark options={fill=purple!80!black}] coordinates {
+    (0, 61.0)
+    (1, 68.7)
+    (2, 70.0)
+    (3, 68.7)
+    (4, 78.9)
+    (5, 75.9)
+};
+\addlegendentry{qwen2-5-vl-32b};
+\addplot[color=teal!80!black, mark=pentagon, mark options={fill=teal!80!black}] coordinates {
+    (0, 55.7)
+    (1, 58.8)
+    (2, 54.5)
+    (3, 55.6)
+    (4, 48.1)
+    (5, 59.6)
+};
+\addlegendentry{qwen2.5vl_3b};
+\addplot[color=magenta!80!black, mark=x, mark options={fill=magenta!80!black}] coordinates {
+    (0, 54.7)
+    (1, 58.6)
+    (2, 56.3)
+    (3, 58.8)
+    (4, 60.4)
+    (5, 64.0)
+};
+\addlegendentry{qwen2.5vl_7b};
+\end{axis}
+\end{tikzpicture}
