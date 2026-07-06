@@ -377,6 +377,67 @@ class BenchmarkTester:
                             del inputs, outputs
                             torch.cuda.empty_cache()
 
+                        # Qwen3.5-style path (thinking-mode chat models):
+                        # needs tokenize=True chat templating and enable_thinking=False,
+                        # unlike the generic tokenize=False flow used below for Qwen2.5-VL.
+                        elif "qwen3" in model_key:
+                            messages = [
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {"type": "image", "image": pil_image},
+                                        {"type": "text", "text": f"{question['question']} Your response MUST be in the following format and nothing else:\n <NUMBER> [<OBJECT1>, <OBJECT2>, <OBJECT3>, ...]"}
+                                    ]
+                                }
+                            ]
+                            torch.cuda.empty_cache()
+                            try:
+                                inputs = processor.apply_chat_template(
+                                    messages,
+                                    add_generation_prompt=True,
+                                    tokenize=True,
+                                    return_dict=True,
+                                    return_tensors="pt",
+                                    enable_thinking=False,
+                                ).to(model.device)
+                            except TypeError:
+                                # fallback if this tokenizer/chat template doesn't support enable_thinking
+                                inputs = processor.apply_chat_template(
+                                    messages,
+                                    add_generation_prompt=True,
+                                    tokenize=True,
+                                    return_dict=True,
+                                    return_tensors="pt",
+                                ).to(model.device)
+                            with torch.no_grad():
+                                input_len = inputs["input_ids"].shape[-1]
+                                outputs = model.generate(
+                                    **inputs,
+                                    max_new_tokens=200,
+                                    do_sample=False,
+                                    num_beams=1,
+                                    pad_token_id=getattr(processor.tokenizer, "pad_token_id", None),
+                                    eos_token_id=getattr(processor.tokenizer, "eos_token_id", None),
+                                )
+                                generated = outputs[0][input_len:]
+                                answer = processor.batch_decode(
+                                    generated.unsqueeze(0), skip_special_tokens=True, clean_up_tokenization_spaces=False
+                                )[0].strip()
+                            cleaned = self.clean_answer(answer)
+                            image_results.append({
+                                "image_id": image_data["image_id"],
+                                "image_type": image_data.get("image_type", "unknown"),
+                                "question_id": question["id"],
+                                "question": question["question"],
+                                "ground_truth": question.get("answer"),
+                                "model_answer": cleaned["count"],
+                                "model_reasoning": cleaned["reasoning"],
+                                "raw_answer": answer,
+                                "property_category": question.get("property_category")
+                            })
+                            del inputs, outputs
+                            torch.cuda.empty_cache()
+
                         # Qwen2.5-VL and generic HF flow (use apply_chat_template if available)
                         else:
                             messages = [

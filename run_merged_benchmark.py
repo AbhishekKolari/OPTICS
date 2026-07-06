@@ -21,13 +21,22 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-from closedsource import resolve_closed_model
+from closedsource import resolve_closed_model, _is_reasoning_model, _guess_image_media_type
+from uncertainty import (
+    estimate_closedsource_uncertainty,
+    generate_with_uncertainty,
+    supports_opensource_uncertainty,
+)
 from utils import load_image_internvl
 
+# See closedsource.py for why these specific SDKs/imports are used:
+#   - OpenAI: modern client-based SDK (openai>=1.0)
+#   - Anthropic: Messages API (anthropic>=0.25)
+#   - Gemini: the new unified `google-genai` SDK, not the legacy `google-generativeai`
 try:
-    import openai
+    from openai import OpenAI
 except Exception:
-    openai = None
+    OpenAI = None
 
 try:
     import anthropic
@@ -35,9 +44,11 @@ except Exception:
     anthropic = None
 
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types as genai_types
 except Exception:
     genai = None
+    genai_types = None
 
 MERGED_ANSWER_SUFFIX = (
     "\n\nAnswer ONLY in this exact format. Do NOT provide reasoning, "
@@ -111,6 +122,9 @@ def detect_backend(model_name: str) -> str:
     if ui in {"gpt", "claude", "gemini", "openai", "anthropic"}:
         return "closedsource"
 
+    if ui.startswith(("o1", "o3", "o4")):
+        return "closedsource"
+
     if any(token in ui for token in ("gpt-", "claude", "anthropic", "gemini")):
         return "closedsource"
 
@@ -141,6 +155,18 @@ def load_opensource_model(model_name: str, processor_path: Optional[str] = None)
             min_pixels=min_pixels,
             max_pixels=max_pixels,
         )
+
+    elif "qwen3" in resolved_lower or "qwen3.5" in resolved_lower:
+        from transformers import AutoModelForVision2Seq, AutoProcessor
+
+        model = AutoModelForVision2Seq.from_pretrained(
+            model_name,
+            torch_dtype=dtype_cuda,
+            device_map="auto" if torch.cuda.is_available() else None,
+            low_cpu_mem_usage=True,
+            trust_remote_code=True,
+        )
+        processor = AutoProcessor.from_pretrained(processor_path, trust_remote_code=True)
 
     elif "blip2" in resolved_lower:
         from transformers import Blip2ForConditionalGeneration, Blip2Processor
@@ -203,6 +229,28 @@ def load_opensource_model(model_name: str, processor_path: Optional[str] = None)
     return model, processor
 
 
+def _apply_chat_template(processor, messages, device_or_model):
+    """Apply chat template; disable thinking mode when supported (Qwen3.x)."""
+    target = device_or_model.device if hasattr(device_or_model, "device") else device_or_model
+    try:
+        return processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+            enable_thinking=False,
+        ).to(target)
+    except TypeError:
+        return processor.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+        ).to(target)
+
+
 def infer_opensource(
     model_name: str,
     model,
@@ -211,13 +259,15 @@ def infer_opensource(
     question: str,
     device: torch.device,
     max_new_tokens: int,
-) -> str:
+    compute_uncertainty: bool = False,
+) -> Tuple[str, Optional[Dict[str, float]]]:
     """Run one merged-benchmark inference for an open-source model."""
     if not os.path.exists(image_path):
         raise FileNotFoundError(f"Image not found: {image_path}")
 
     prompt = format_merged_prompt(question)
     model_key = model_name.lower()
+    uncertainty_scores: Optional[Dict[str, float]] = None
 
     if "internvl" in model_key:
         pixel_values = load_image_internvl(image_path, input_size=448, max_num=12)
@@ -240,11 +290,13 @@ def infer_opensource(
         del pixel_values
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        return response
+        if compute_uncertainty and not supports_opensource_uncertainty(model_name):
+            print(f"Warning: uncertainty not supported for {model_name}; skipping.")
+        return response, uncertainty_scores
 
     pil_image = Image.open(image_path).convert("RGB")
 
-    if "gemma" in model_key:
+    if "gemma" in model_key or "qwen3" in model_key:
         messages = [
             {"role": "system", "content": [{"type": "text", "text": "You are a helpful assistant."}]},
             {
@@ -255,30 +307,37 @@ def infer_opensource(
                 ],
             },
         ]
-        inputs = processor.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
-        ).to(model.device)
+        inputs = _apply_chat_template(processor, messages, model)
         with torch.no_grad():
             input_len = inputs["input_ids"].shape[-1]
-            outputs = model.generate(
-                **inputs,
-                max_new_tokens=max_new_tokens,
-                do_sample=False,
-                num_beams=1,
-                early_stopping=False,
-                pad_token_id=processor.tokenizer.eos_token_id,
-                eos_token_id=processor.tokenizer.eos_token_id,
-            )
-            generated = outputs[0][input_len:]
+            pad_id = getattr(processor.tokenizer, "pad_token_id", None)
+            eos_id = getattr(processor.tokenizer, "eos_token_id", processor.tokenizer.eos_token_id)
+            if compute_uncertainty and supports_opensource_uncertainty(model_name):
+                outputs, uncertainty_scores = generate_with_uncertainty(
+                    model,
+                    inputs,
+                    prompt_len=input_len,
+                    max_new_tokens=max_new_tokens,
+                    pad_token_id=pad_id,
+                    eos_token_id=eos_id,
+                )
+                generated = outputs[0][input_len:]
+            else:
+                outputs = model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                    num_beams=1,
+                    early_stopping=False,
+                    pad_token_id=pad_id,
+                    eos_token_id=eos_id,
+                )
+                generated = outputs[0][input_len:]
             answer = processor.decode(generated, skip_special_tokens=True)
         del inputs, outputs
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        return answer
+        return answer, uncertainty_scores
 
     if "blip2" in model_key:
         blip_prompt = f"Question: {prompt} Answer:"
@@ -295,7 +354,9 @@ def infer_opensource(
         del inputs, outputs
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        return answer
+        if compute_uncertainty:
+            print(f"Warning: uncertainty not supported for {model_name}; skipping.")
+        return answer, uncertainty_scores
 
     messages = [
         {
@@ -312,16 +373,30 @@ def infer_opensource(
     else:
         inputs = processor(images=pil_image, text=prompt, return_tensors="pt").to(device)
 
+    prompt_len = inputs["input_ids"].shape[1] if "input_ids" in inputs else None
+    pad_id = getattr(processor.tokenizer, "pad_token_id", None)
+    eos_id = getattr(processor.tokenizer, "eos_token_id", None)
+
     with torch.no_grad():
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            num_beams=1,
-            early_stopping=False,
-            pad_token_id=getattr(processor.tokenizer, "pad_token_id", None),
-            eos_token_id=getattr(processor.tokenizer, "eos_token_id", None),
-        )
+        if compute_uncertainty and prompt_len is not None and supports_opensource_uncertainty(model_name):
+            outputs, uncertainty_scores = generate_with_uncertainty(
+                model,
+                inputs,
+                prompt_len=prompt_len,
+                max_new_tokens=max_new_tokens,
+                pad_token_id=pad_id,
+                eos_token_id=eos_id,
+            )
+        else:
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                num_beams=1,
+                early_stopping=False,
+                pad_token_id=pad_id,
+                eos_token_id=eos_id,
+            )
         try:
             answer = processor.batch_decode(
                 outputs, skip_special_tokens=True, clean_up_tokenization_spaces=False
@@ -332,7 +407,7 @@ def infer_opensource(
     del inputs, outputs
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
-    return answer
+    return answer, uncertainty_scores
 
 
 def _image_to_base64_str(image_path: str) -> str:
@@ -345,13 +420,12 @@ def setup_closedsource_client(provider: str):
     provider = provider.lower()
 
     if provider == "gpt":
-        if openai is None:
-            raise RuntimeError("OpenAI SDK not installed. pip install openai")
+        if OpenAI is None:
+            raise RuntimeError("OpenAI SDK not installed or too old. pip install --upgrade openai")
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY environment variable is required")
-        openai.api_key = api_key
-        return provider, openai
+        return provider, OpenAI(api_key=api_key)
 
     if provider == "claude":
         if anthropic is None:
@@ -359,19 +433,17 @@ def setup_closedsource_client(provider: str):
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY environment variable is required")
-        try:
-            client = anthropic.Client(api_key=api_key)
-        except Exception:
-            client = anthropic.Anthropic(api_key=api_key)
-        return provider, client
+        return provider, anthropic.Anthropic(api_key=api_key)
 
     if provider == "gemini":
         if genai is None:
-            raise RuntimeError("Google Generative AI SDK not installed. pip install google-generativeai")
+            raise RuntimeError(
+                "Google Gen AI SDK not installed. pip install google-genai "
+                "(note: this is the `google-genai` package, not `google-generativeai`)"
+            )
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
             raise RuntimeError("GOOGLE_API_KEY environment variable is required")
-        genai.configure(api_key=api_key)
         return provider, genai.Client(api_key=api_key)
 
     raise RuntimeError(f"Unhandled provider: {provider}")
@@ -383,12 +455,29 @@ def infer_closedsource(
     model_id: str,
     image_path: str,
     question: str,
-) -> str:
+    compute_uncertainty: bool = False,
+    uncertainty_method: str = "msp",
+) -> Tuple[str, Optional[Dict[str, float]]]:
     """Run one merged-benchmark inference for a closed-source API model."""
     if not os.path.exists(image_path):
         raise FileNotFoundError(f"Image not found: {image_path}")
 
     prompt = format_merged_prompt(question)
+    uncertainty_scores: Optional[Dict[str, float]] = None
+
+    if compute_uncertainty and provider == "gpt":
+        b64 = _image_to_base64_str(image_path)
+        score, raw_answer = estimate_closedsource_uncertainty(
+            image_b64=b64,
+            prompt=prompt,
+            model_id=model_id,
+            uncertainty_method=uncertainty_method,
+        )
+        uncertainty_scores = {uncertainty_method.lower(): score}
+        return raw_answer, uncertainty_scores
+
+    if compute_uncertainty and provider != "gpt":
+        print(f"Warning: closed-source uncertainty is only supported for OpenAI models; skipping for {provider}.")
 
     if provider == "gpt":
         b64 = _image_to_base64_str(image_path)
@@ -401,32 +490,53 @@ def infer_closedsource(
                 ],
             }
         ]
-        resp = openai.ChatCompletion.create(
-            model=model_id,
-            messages=messages,
-            max_tokens=2000,
-            temperature=0.0,
-        )
-        try:
-            return resp["choices"][0]["message"]["content"].strip()
-        except Exception:
-            return resp.choices[0].message.content.strip()
+        create_kwargs = dict(model=model_id, messages=messages)
+        if _is_reasoning_model(model_id):
+            # o-series reasoning models: no temperature, different token-limit kwarg
+            create_kwargs["max_completion_tokens"] = 2000
+        else:
+            create_kwargs["max_tokens"] = 2000
+            create_kwargs["temperature"] = 0.0
+        resp = client.chat.completions.create(**create_kwargs)
+        return (resp.choices[0].message.content or "").strip(), uncertainty_scores
 
     if provider == "claude":
         with open(image_path, "rb") as f:
             img_b64 = base64.b64encode(f.read()).decode()
-        combined = f"IMAGE_BASE64:{img_b64}\n\n{prompt}"
-        resp = client.completions.create(
+        media_type = _guess_image_media_type(image_path)
+        resp = client.messages.create(
             model=model_id,
-            prompt=combined,
-            max_tokens_to_sample=200,
+            max_tokens=200,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": media_type,
+                                "data": img_b64,
+                            },
+                        },
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ],
         )
-        return getattr(resp, "completion", getattr(resp, "text", str(resp))).strip()
+        raw_answer = "".join(
+            block.text for block in resp.content if getattr(block, "type", None) == "text"
+        ).strip()
+        return raw_answer, uncertainty_scores
 
     if provider == "gemini":
-        uploaded = client.files.upload(file=image_path)
-        response = client.models.generate_content(model=model_id, contents=[uploaded, prompt])
-        return getattr(response, "text", getattr(response, "content", str(response))).strip()
+        pil_image = Image.open(image_path).convert("RGB")
+        response = client.models.generate_content(
+            model=model_id,
+            contents=[pil_image, prompt],
+            config=genai_types.GenerateContentConfig(temperature=0.0, max_output_tokens=2000),
+        )
+        return (getattr(response, "text", None) or "").strip(), uncertainty_scores
 
     raise RuntimeError(f"Unhandled provider: {provider}")
 
@@ -438,6 +548,7 @@ def build_result_record(
     model_answer: Optional[str],
     raw_answer: str,
     include_metadata: bool,
+    uncertainty: Optional[Dict[str, float]] = None,
     skipped: bool = False,
     skip_reason: Optional[str] = None,
     error: Optional[str] = None,
@@ -459,6 +570,8 @@ def build_result_record(
         ),
         "skipped": skipped,
     }
+    if uncertainty:
+        record["uncertainty"] = uncertainty
     if skip_reason:
         record["skip_reason"] = skip_reason
     if error:
@@ -487,6 +600,8 @@ def process_merged_benchmark(
     end_idx: Optional[int] = None,
     max_new_tokens: int = 512,
     include_metadata: bool = False,
+    compute_uncertainty: bool = False,
+    uncertainty_method: str = "msp",
 ) -> List[Dict[str, Any]]:
     """Evaluate a model on the merged-image comparison benchmark."""
     resolved_backend = detect_backend(model_name) if backend == "auto" else backend
@@ -546,7 +661,7 @@ def process_merged_benchmark(
 
             try:
                 if resolved_backend == "opensource":
-                    raw_answer = infer_opensource(
+                    raw_answer, uncertainty_scores = infer_opensource(
                         model_name=model_name,
                         model=model,
                         processor=processor,
@@ -554,14 +669,17 @@ def process_merged_benchmark(
                         question=question_data.get("merged_question_2", ""),
                         device=device,
                         max_new_tokens=max_new_tokens,
+                        compute_uncertainty=compute_uncertainty,
                     )
                 else:
-                    raw_answer = infer_closedsource(
+                    raw_answer, uncertainty_scores = infer_closedsource(
                         provider=closed_provider,
                         client=closed_client,
                         model_id=closed_model_id,
                         image_path=image_path,
                         question=question_data.get("merged_question_2", ""),
+                        compute_uncertainty=compute_uncertainty,
+                        uncertainty_method=uncertainty_method,
                     )
 
                 model_answer = extract_final_label(raw_answer)
@@ -572,6 +690,7 @@ def process_merged_benchmark(
                     model_answer=model_answer,
                     raw_answer=raw_answer,
                     include_metadata=include_metadata,
+                    uncertainty=uncertainty_scores,
                 )
                 results.append(record)
 
@@ -704,6 +823,19 @@ def main() -> None:
         action="store_true",
         help="Include optional dataset metadata fields in each result record",
     )
+    parser.add_argument(
+        "--compute_uncertainty",
+        action="store_true",
+        help="Compute uncertainty scores (MSP/perplexity/entropy for open-source; lm-polygraph for OpenAI)",
+    )
+    parser.add_argument(
+        "--uncertainty_method",
+        type=str,
+        default="msp",
+        choices=["msp", "perplexity", "mean_token_entropy", "kernel_language_entropy"],
+        help="Uncertainty estimator for closed-source OpenAI models (default: msp). "
+             "Open-source models always compute all three metrics when enabled.",
+    )
     args = parser.parse_args()
 
     process_merged_benchmark(
@@ -717,6 +849,8 @@ def main() -> None:
         end_idx=args.end_idx,
         max_new_tokens=args.max_new_tokens,
         include_metadata=args.include_metadata,
+        compute_uncertainty=args.compute_uncertainty,
+        uncertainty_method=args.uncertainty_method,
     )
 
 

@@ -24,10 +24,17 @@ from utils import BenchmarkTester
 from utils import resolve_image_path
 
 # Attempt SDK imports; raise error if missing
+# NOTE: modern vendor SDKs (used throughout this file):
+#   - OpenAI:    openai>=1.0 client-based API (openai.OpenAI(...).chat.completions.create)
+#   - Anthropic: anthropic>=0.25 Messages API (anthropic.Anthropic(...).messages.create)
+#   - Gemini:    the new unified `google-genai` SDK (`from google import genai`),
+#                NOT the legacy `google-generativeai` package. The old package exposes
+#                `genai.configure()` / `genai.GenerativeModel()` and has no `genai.Client`,
+#                so mixing the two raises AttributeError at call time.
 try:
-    import openai
+    from openai import OpenAI
 except Exception:
-    openai = None
+    OpenAI = None
 
 try:
     import anthropic
@@ -35,22 +42,50 @@ except Exception:
     anthropic = None
 
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types as genai_types
 except Exception:
     genai = None
+    genai_types = None
 
 # Defaults if env var not provided
 DEFAULT_MODELS = {
     "gpt": "gpt-4o-mini-2024-07-18",
-    "claude": "claude-3.7-sonnet",
-    "gemini": "gemini-2.0-pro"
+    "claude": "claude-3-7-sonnet-20250219",
+    "gemini": "gemini-2.5-flash"
 }
+
+# OpenAI "reasoning" models (o1, o3, o4, ...) use a different call signature:
+# no `temperature` argument (only the default of 1 is supported) and
+# `max_completion_tokens` instead of `max_tokens`.
+_REASONING_MODEL_PREFIXES = ("o1", "o3", "o4")
+
+
+def _is_reasoning_model(model_id: str) -> bool:
+    """True for OpenAI o-series reasoning models (o1, o3, o4, ...)."""
+    return (model_id or "").lower().startswith(_REASONING_MODEL_PREFIXES)
+
+
+def _guess_image_media_type(image_path) -> str:
+    """Best-effort MIME type for an image file, used by the Anthropic vision payload."""
+    suffix = Path(str(image_path)).suffix.lower()
+    return {
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+    }.get(suffix, "image/jpeg")
 
 def _looks_like_model_id(s: str) -> bool:
     """Heuristic: model ids typically contain '-' or '/' (repo-like or vendor model names)."""
     if not s:
         return False
     return ("-" in s) or ("/" in s)
+
+
+def _is_exact_openai_model_id(s: str) -> bool:
+    """Recognize OpenAI model ids that lack dashes (e.g. o3, o1)."""
+    lower = s.lower()
+    return lower.startswith(("o1", "o3", "gpt"))
 
 def resolve_closed_model(user_input: str):
     """
@@ -64,10 +99,17 @@ def resolve_closed_model(user_input: str):
     ui = user_input.strip()
     ui_lower = ui.lower()
 
+    # Case 0: bare provider aliases (no dash, no repo-like id) always resolve via
+    # the alias branch below, even though "gpt" would otherwise pass
+    # _is_exact_openai_model_id's startswith("gpt") check.
+    _BARE_ALIASES = {"gpt", "claude", "gemini", "openai", "anthropic", "google"}
+    if ui_lower in _BARE_ALIASES:
+        pass  # fall through to Case 2
+
     # Case 1: user passed a full model id (use exact string)
-    if _looks_like_model_id(ui):
+    elif _looks_like_model_id(ui) or _is_exact_openai_model_id(ui):
         # infer provider by substring
-        if "gpt" in ui_lower:
+        if "gpt" in ui_lower or ui_lower.startswith(("o1", "o3")):
             return "gpt", ui
         if "claude" in ui_lower:
             return "claude", ui
@@ -112,40 +154,32 @@ def run_closedsource(model_name: str, benchmark_json: str, data_dir: str, output
     google_key = os.getenv("GOOGLE_API_KEY")
 
     # configure SDKs / clients if needed
-    openai_client_ready = False
+    openai_client = None
     anthropic_client = None
     genai_client = None
 
     if provider == "gpt":
-        if openai is None:
-            raise RuntimeError("OpenAI SDK not installed. pip install openai")
+        if OpenAI is None:
+            raise RuntimeError("OpenAI SDK not installed or too old. pip install --upgrade openai")
         if not openai_key:
             raise RuntimeError("OPENAI_API_KEY environment variable is required for OpenAI requests")
-        openai.api_key = openai_key
-        openai_client_ready = True
+        openai_client = OpenAI(api_key=openai_key)
 
     if provider == "claude":
         if anthropic is None:
             raise RuntimeError("Anthropic SDK not installed. pip install anthropic")
         if not anth_key:
             raise RuntimeError("ANTHROPIC_API_KEY environment variable is required for Anthropic requests")
-        # try common constructors
-        try:
-            anthropic_client = anthropic.Client(api_key=anth_key)
-        except Exception:
-            try:
-                anthropic_client = anthropic.Anthropic(api_key=anth_key)
-            except Exception:
-                anthropic_client = None
-        if anthropic_client is None:
-            raise RuntimeError("Unable to create Anthropic client with installed SDK")
+        anthropic_client = anthropic.Anthropic(api_key=anth_key)
 
     if provider == "gemini":
         if genai is None:
-            raise RuntimeError("Google Generative AI SDK not installed. pip install google-generative-ai")
+            raise RuntimeError(
+                "Google Gen AI SDK not installed. pip install google-genai "
+                "(note: this is the `google-genai` package, not `google-generativeai`)"
+            )
         if not google_key:
             raise RuntimeError("GOOGLE_API_KEY environment variable is required for Gemini requests")
-        genai.configure(api_key=google_key)
         genai_client = genai.Client(api_key=google_key)
 
     results = []
@@ -165,7 +199,7 @@ def run_closedsource(model_name: str, benchmark_json: str, data_dir: str, output
                 raw_answer = ""
 
                 if provider == "gpt":
-                    # OpenAI ChatCompletion multimodal call: pass base64 image as data URI
+                    # OpenAI multimodal call via the modern client SDK; pass base64 image as data URI.
                     b64 = _image_to_base64_str(str(image_path))
                     messages = [
                         {
@@ -176,42 +210,57 @@ def run_closedsource(model_name: str, benchmark_json: str, data_dir: str, output
                             ]
                         }
                     ]
-                    resp = openai.ChatCompletion.create(
-                        model=resolved_model_id,
-                        messages=messages,
-                        max_tokens=2000,
-                        temperature=0.0
-                    )
-                    
-                    try:
-                        raw_answer = resp["choices"][0]["message"]["content"].strip()
-                    except Exception:
-                        try:
-                            raw_answer = resp.choices[0].message.content.strip()
-                        except Exception:
-                            raw_answer = str(resp)
+                    create_kwargs = dict(model=resolved_model_id, messages=messages)
+                    if _is_reasoning_model(resolved_model_id):
+                        # o-series reasoning models: no temperature, different token-limit kwarg
+                        create_kwargs["max_completion_tokens"] = 2000
+                    else:
+                        create_kwargs["max_tokens"] = 2000
+                        create_kwargs["temperature"] = 0.0
+                    resp = openai_client.chat.completions.create(**create_kwargs)
+                    raw_answer = (resp.choices[0].message.content or "").strip()
 
                 elif provider == "claude":
-                    # Anthropic: embed base64 and send as text payload (SDK shapes vary)
+                    # Anthropic Messages API: send the image as a real vision content block.
                     with open(image_path, "rb") as f:
                         img_b64 = base64.b64encode(f.read()).decode()
-                    combined = f"IMAGE_BASE64:{img_b64}\n\n{prompt}"
-                    # many SDKs expose completions.create
-                    resp = anthropic_client.completions.create(
+                    media_type = _guess_image_media_type(image_path)
+                    resp = anthropic_client.messages.create(
                         model=resolved_model_id,
-                        prompt=combined,
-                        max_tokens_to_sample=200,
+                        max_tokens=200,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": media_type,
+                                            "data": img_b64,
+                                        },
+                                    },
+                                    {"type": "text", "text": prompt},
+                                ],
+                            }
+                        ],
                     )
-                    raw_answer = getattr(resp, 'completion', getattr(resp, 'text', str(resp))).strip()
+                    raw_answer = "".join(
+                        block.text for block in resp.content if getattr(block, "type", None) == "text"
+                    ).strip()
 
                 elif provider == "gemini":
-                    # Google: upload file handle and call generate_content
-                    uploaded = genai_client.files.upload(file=str(image_path))
+                    # Google Gen AI SDK: pass the PIL image directly, no upload round-trip needed.
+                    pil_image = Image.open(image_path).convert("RGB")
                     response = genai_client.models.generate_content(
                         model=resolved_model_id,
-                        contents=[uploaded, prompt]
+                        contents=[pil_image, prompt],
+                        config=genai_types.GenerateContentConfig(
+                            temperature=0.0,
+                            max_output_tokens=2000,
+                        ),
                     )
-                    raw_answer = getattr(response, 'text', getattr(response, 'content', str(response))).strip()
+                    raw_answer = (getattr(response, "text", None) or "").strip()
 
                 else:
                     raise RuntimeError(f"Unhandled provider: {provider}")

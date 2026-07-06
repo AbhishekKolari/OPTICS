@@ -19,6 +19,7 @@ from utils import BenchmarkTester
 # Hardcoded aliases -> representative repo ids (lowercase)
 MODEL_ALIAS_MAP = {
     "qwen2.5-vl": ["qwen/qwen2.5-vl-7b-instruct", "qwen/qwen2.5-vl-32b-instruct"],
+    "qwen3.5": ["qwen/qwen3.5-9b"],
     "blip2": ["salesforce/blip2-flan-t5-xxl", "salesforce/blip2-opt-2.7b", "salesforce/blip2-opt-6.7b"],
     "internvl3": ["opengvlab/internvl3-8b", "opengvlab/internvl3-14b"],
     "gemma-3": ["google/gemma-3-27b-it"]
@@ -55,6 +56,18 @@ def run_opensource(model_name: str, processor_path: str, benchmark_json: str, da
         min_pixels = 256*28*28
         max_pixels = 1280*28*28
         processor = AutoProcessor.from_pretrained(processor_path or model_name, trust_remote_code=True, min_pixels=min_pixels, max_pixels=max_pixels)
+
+    elif "qwen3.5" in resolved_lower or "qwen3_5" in resolved_lower or "qwen3" in resolved_lower:
+        from transformers import AutoModelForVision2Seq, AutoProcessor
+        print(f"Loading hardcoded model Qwen3.5 from '{model_name}' (alias resolved to qwen3.5)")
+        model = AutoModelForVision2Seq.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+            device_map="auto" if torch.cuda.is_available() else None,
+            low_cpu_mem_usage=True,
+            trust_remote_code=True
+        )
+        processor = AutoProcessor.from_pretrained(processor_path or model_name, trust_remote_code=True)
 
     elif "blip2" in resolved_lower:
         from transformers import Blip2ForConditionalGeneration, Blip2Processor

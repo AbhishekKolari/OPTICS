@@ -99,6 +99,18 @@ def main():
         action="store_true",
         help="Include optional dataset metadata in OPTICS-CMP result records",
     )
+    parser.add_argument(
+        "--compute_uncertainty",
+        action="store_true",
+        help="Compute uncertainty scores on OPTICS-CMP (see uncertainty.py)",
+    )
+    parser.add_argument(
+        "--uncertainty_method",
+        type=str,
+        default="msp",
+        choices=["msp", "perplexity", "mean_token_entropy", "kernel_language_entropy"],
+        help="Closed-source OpenAI uncertainty estimator for OPTICS-CMP (default: msp)",
+    )
 
     # Analysis (OPTICS-CNT only)
     parser.add_argument(
@@ -162,6 +174,8 @@ def main():
             end_idx=args.end_idx,
             max_new_tokens=args.max_new_tokens,
             include_metadata=args.include_metadata,
+            compute_uncertainty=args.compute_uncertainty,
+            uncertainty_method=args.uncertainty_method,
         )
 
 
