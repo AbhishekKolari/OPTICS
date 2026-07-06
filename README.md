@@ -9,7 +9,8 @@ Both benchmarks span four object property dimensions (physical, taxonomic, funct
 
 <!-- 📄 [Paper](https://arxiv.org/pdf/2508.10956) |  -->
 
-    📚[arXiv](https://arxiv.org/abs/2508.10956) | 🤗 [Dataset](https://huggingface.co/datasets/Abk802/ORBIT)
+📚 [arXiv](https://arxiv.org/abs/2508.10956) | 
+🤗 [Dataset](https://huggingface.co/datasets/Abk802/ORBIT)
 
 <!-- 💻 [Code](https://github.com/AbhishekKolari/ORBIT.git) | -->
 
@@ -47,9 +48,10 @@ Both benchmarks span four object property dimensions (physical, taxonomic, funct
 OPTICS provides scripts to reproduce and evaluate multiple open-source and closed-source models on both benchmarks:
 
 - **`main.py`** — Single CLI entrypoint for both benchmarks. Use `--benchmark cnt` for OPTICS-CNT (counting) or `--benchmark cmp` for OPTICS-CMP (comparison). Dispatches to the appropriate runner based on benchmark and mode.
-- **`opensource.py`** — Loads and evaluates open-source HuggingFace (HF) models on **OPTICS-CNT**. Contains hardcoded models (different size variants) used for evaluation as in the paper (BLIP2, Qwen2.5-VL, InternVL3, and Gemma 3) and falls back to generic HF loading for arbitrary repo IDs. Gemma 3 is a gated model on HF and requires an HF token. Accepts full HF paths (`opengvlab/internvl3-8b`) or local model directories.
-- **`closedsource.py`** — Routes multimodal requests to closed-source providers (OpenAI GPT-4o, Anthropic Claude, Google Gemini) on **OPTICS-CNT**. Accepts short aliases (`gpt`, `claude`, `gemini`) or full provider model ids (`gpt-4o-mini-2024-07-18`, `claude-3.7-sonnet`, `gemini-2.0-pro`). Reads API keys from env vars.
-- **`run_merged_benchmark.py`** — Unified runner for **OPTICS-CMP**. Supports both open-source and closed-source models in a single script (auto-detects backend from `--model_name`, or force with `--backend`). Can also be invoked via `main.py --benchmark cmp`. Results are saved in a model-agnostic JSON format.
+- **`opensource.py`** — Loads and evaluates open-source HuggingFace (HF) models on **OPTICS-CNT**. Contains hardcoded models (different size variants) used for evaluation as in the paper (BLIP2, Qwen2.5-VL, Qwen3.5, InternVL3, and Gemma 3) and falls back to generic HF loading for arbitrary repo IDs. Gemma 3 is a gated model on HF and requires an HF token. Accepts full HF paths (`opengvlab/internvl3-8b`) or local model directories.
+- **`closedsource.py`** — Routes multimodal requests to closed-source providers (OpenAI GPT/o-series, Anthropic Claude, Google Gemini) on **OPTICS-CNT**. Accepts short aliases (`gpt`, `claude`, `gemini`) or full provider model ids (`gpt-4o-mini-2024-07-18`, `claude-3-7-sonnet-20250219`, `gemini-2.5-flash`, `o3`). Reads API keys from env vars.
+- **`run_merged_benchmark.py`** — Unified runner for **OPTICS-CMP**. Supports both open-source and closed-source models in a single script (auto-detects backend from `--model_name`, or force with `--backend`). Can also be invoked via `main.py --benchmark cmp`. Optionally computes per-answer uncertainty scores via `--compute_uncertainty` (see `uncertainty.py` below). Results are saved in a model-agnostic JSON format.
+- **`uncertainty.py`** — Standalone uncertainty-estimation utilities used by `run_merged_benchmark.py` on **OPTICS-CMP**. For open-source models, computes MSP, perplexity, and mean token entropy directly from generation scores (`generate_with_uncertainty()`); InternVL and BLIP-2 are not supported since they don't expose step-wise scores. For closed-source OpenAI models, estimates uncertainty (MSP, perplexity, mean token entropy, or kernel language entropy) via the optional `lm-polygraph` dependency (`estimate_closedsource_uncertainty()`).
 - **`utils.py`** — Contains main logic behind evaluating models in `evaluate_model()` under the class `BenchmarkTester` (OPTICS-CNT), InternVL preprocessing helpers, path resolution in `resolve_image_path()`, and metric helpers (accuracy, off-by-n, RMSE, mean error) in `compute_metrics_from_results()`.
 - **`question_generator.py`** — Generate MLLM-based question triples on existing images from `data/` or on a new set of images (organized similarly to `data/`) and write them into a benchmark-style JSON (same top-level structure as OPTICS-CNT's `benchmark.json`). Uses closed-source providers (OpenAI GPT-4o, Anthropic Claude, Google Gemini). Accepts short aliases (`gpt`, `claude`, `gemini`). Supports `--test_mode` for quick checks and `--max_images` (default 3 in test mode).
 
@@ -75,8 +77,8 @@ Create a `.env` file to store the keys and token in the same manner as given in 
 
    # default model ids (used when --model is an alias)
    OPENAI_MODEL=gpt-4o-mini-2024-07-18
-   ANTHROPIC_MODEL=claude-3.7-sonnet
-   GOOGLE_MODEL=gemini-2.0-pro
+   ANTHROPIC_MODEL=claude-3-7-sonnet-20250219
+   GOOGLE_MODEL=gemini-2.5-flash
 ```
 
 For closed-source models, also include default model versions used as `*_MODEL`.
@@ -150,6 +152,19 @@ By default, `start_idx` and `batch_size` are set to 0 and 360 (total number of i
      --images_dir ./merged_images \
      --output_file qwen_cmp_results.json
    ```
+4. **With uncertainty estimation** (OPTICS-CMP only, see `uncertainty.py`):
+
+   ```bash
+   python run_merged_benchmark.py \
+     --model_name qwen/qwen2.5-vl-7b-instruct \
+     --questions_json ./benchmark_merged.json \
+     --images_dir ./merged_images \
+     --output_file qwen_cmp_results.json \
+     --compute_uncertainty \
+     --uncertainty_method msp
+   ```
+
+   Open-source models always report MSP, perplexity, and mean token entropy together when `--compute_uncertainty` is set (InternVL and BLIP-2 are unsupported). `--uncertainty_method` selects the estimator for closed-source OpenAI models (`msp`, `perplexity`, `mean_token_entropy`, or `kernel_language_entropy`), and requires the optional `lm-polygraph` dependency (see the commented-out line in `requirements.txt`).
 
 For OPTICS-CMP, `--mode` is optional when using `main.py` — the backend is auto-detected from `--model_name`. Use `--end_idx` to limit the number of comparison questions processed. Add `--include_metadata` to include optional dataset fields (bucket, similarity, count diff) in result records.
 
