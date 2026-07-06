@@ -14,11 +14,17 @@ torchaudio==2.2.1
 tqdm==4.66.2
 transformers==4.51.1
 umap==0.1.1
-openai~=0.28.0
+# NOTE: closedsource.py / run_merged_benchmark.py use the modern, client-based
+# OpenAI SDK (openai.OpenAI(...).chat.completions.create), which requires >=1.0.
+# The old 0.28.x ChatCompletion.create()-style API is NOT compatible with this code.
+openai>=1.30.0
 seaborn~=0.13.2
 replicate~=0.31.0
 accelerate>=1.1.0
-google-generativeai==0.7.2
+# Gemini support uses the new unified `google-genai` SDK (`from google import genai`,
+# `genai.Client(...)`), NOT the legacy `google-generativeai` package. Do not install
+# `google-generativeai` in place of this — the two have incompatible APIs.
+google-genai>=0.3.0
 anthropic==0.63.0
 ipykernel==6.29.5
 papermill==2.6.0
@@ -29,3 +35,5 @@ einops
 timm
 python-dotenv==1.0.0       # helpful for .env loading (optional)
 typing-extensions>=4.5.0
+# Optional: closed-source uncertainty via lm-polygraph (OPTICS-CMP --compute_uncertainty)
+# lm-polygraph
