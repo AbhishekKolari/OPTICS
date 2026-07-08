@@ -1,4 +1,5 @@
-<h1 align="center"> OPTICS: <ins>O</ins>bject <ins>P</ins>roperty Reasoning <ins>T</ins>asks for Evaluating <ins>I</ins>mage-based <ins>C</ins>ommon<ins>S</ins>ense</h1>
+<h1 align="center"> A Study of Commonsense Reasoning over Visual Object Properties </h1>
+<!-- <h1 align="center"> OPTICS: <ins>O</ins>bject <ins>P</ins>roperty Reasoning <ins>T</ins>asks for Evaluating <ins>I</ins>mage-based <ins>C</ins>ommon<ins>S</ins>ense</h1> -->
 
 OPTICS is a comprehensive benchmark suite for evaluating Vision-Language Models (VLMs) on object property reasoning and image-based common sense. It is divided into two benchmarks:
 
@@ -222,16 +223,17 @@ By default, `--image_type` is set to `REAL`. The questions in the output JSON fi
 If you found OPTICS useful, please cite us:
 
 ```bash
-@misc{kolari2025orbitobjectpropertyreasoning,
-      title={OPTICS: Object Property Reasoning Tasks for Evaluating Image-based Common Sense}, 
+@misc{kolari2026studycommonsensereasoningvisual,
+      title={A Study of Commonsense Reasoning over Visual Object Properties}, 
       author={Abhishek Kolari and Mohammadhossein Khojasteh and Yifan Jiang and Floris den Hengst and Filip Ilievski},
-      year={2025},
+      year={2026},
       eprint={2508.10956},
       archivePrefix={arXiv},
       primaryClass={cs.CV},
       url={https://arxiv.org/abs/2508.10956}, 
 }
 ```
+
 
 <!-- ## Project Structure
 
