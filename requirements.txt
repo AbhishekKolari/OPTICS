@@ -2,16 +2,16 @@ matplotlib==3.8.0
 numpy<2.0.0
 pandas==2.2.2
 Pillow>=13.0.0
-requests==2.32.3
+requests>=2.33.0
 scipy==1.14.0
 sentence-transformers>=5.6.0
 tiktoken==0.7.0
 #  --extra-index-url https://download.pytorch.org/whl/cu118
 # --extra-index-url https://download.pytorch.org/whl/cu121
-torch==2.8.0
+torch>=2.13.0
 torchvision==0.17.1
 torchaudio==2.2.1
-tqdm==4.66.2
+tqdm>=4.66.3
 transformers>=5.10.0
 umap==0.1.1
 # NOTE: closedsource.py / run_merged_benchmark.py use the modern, client-based
@@ -33,7 +33,7 @@ triton
 num2words
 einops
 timm
-python-dotenv==1.0.0       # helpful for .env loading (optional)
+python-dotenv>=1.2.2       # helpful for .env loading (optional)
 typing-extensions>=4.5.0
 # Optional: closed-source uncertainty via lm-polygraph (OPTICS-CMP --compute_uncertainty)
 # lm-polygraph
