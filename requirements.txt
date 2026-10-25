@@ -12,7 +12,7 @@ torch==2.8.0
 torchvision==0.17.1
 torchaudio==2.2.1
 tqdm==4.66.2
-transformers==4.51.1
+transformers>=5.10.0
 umap==0.1.1
 # NOTE: closedsource.py / run_merged_benchmark.py use the modern, client-based
 # OpenAI SDK (openai.OpenAI(...).chat.completions.create), which requires >=1.0.
